@@ -22,12 +22,85 @@ engine = GeoPlot(config, {
   step_time: 3600,
   coordinates = "agents/consumers/coordinates",
   feature = "agents/consumers/money_spent",
+  auto_color_scale: true,  # Enable dynamic color scaling
+  min_value: 0,  # Optional: override min value
+  max_value: 100,  # Optional: override max value
 })
 
 # visualize in the runner-loop
 for i in range(0, num_episodes):
   runner.step(num_steps_per_episode)
-  engine.render(runner.state_trajectory)
+  engine.visualize(runner.state_trajectory)
+```
+
+Test cases for dynamic color scaling:
+
+```py
+# Test case 1: Basic auto-scaling
+state_trajectory = [
+    [{"agents": {"consumers": {"money_spent": [10, 20, 30]}}}],
+    [{"agents": {"consumers": {"money_spent": [40, 50, 60]}}}]
+]
+options = {
+    "cesium_token": "test",
+    "step_time": 3600,
+    "coordinates": "agents/consumers/coordinates",
+    "feature": "agents/consumers/money_spent",
+    "auto_color_scale": True
+}
+geoplot = GeoPlot({"simulation_metadata": {"name": "test"}}, options)
+geoplot.visualize(state_trajectory)
+assert geoplot.min_value == 10
+assert geoplot.max_value == 60
+
+# Test case 2: Manual override
+options["min_value"] = 0
+options["max_value"] = 100
+geoplot = GeoPlot({"simulation_metadata": {"name": "test"}}, options)
+geoplot.visualize(state_trajectory)
+assert geoplot.min_value == 0
+assert geoplot.max_value == 100
+
+# Test case 3: Mixed override (min only)
+options = {
+    "cesium_token": "test",
+    "step_time": 3600,
+    "coordinates": "agents/consumers/coordinates",
+    "feature": "agents/consumers/money_spent",
+    "auto_color_scale": True,
+    "min_value": 0
+}
+geoplot = GeoPlot({"simulation_metadata": {"name": "test"}}, options)
+geoplot.visualize(state_trajectory)
+assert geoplot.min_value == 0
+assert geoplot.max_value == 60
+
+# Test case 4: Disabled auto-scaling
+options = {
+    "cesium_token": "test",
+    "step_time": 3600,
+    "coordinates": "agents/consumers/coordinates",
+    "feature": "agents/consumers/money_spent",
+    "auto_color_scale": False
+}
+geoplot = GeoPlot({"simulation_metadata": {"name": "test"}}, options)
+geoplot.visualize(state_trajectory)
+assert geoplot.min_value is None
+assert geoplot.max_value is None
+
+# Test case 5: Empty trajectory
+state_trajectory = []
+options = {
+    "cesium_token": "test",
+    "step_time": 3600,
+    "coordinates": "agents/consumers/coordinates",
+    "feature": "agents/consumers/money_spent",
+    "auto_color_scale": True
+}
+geoplot = GeoPlot({"simulation_metadata": {"name": "test"}}, options)
+geoplot.visualize(state_trajectory)
+assert geoplot.min_value is None
+assert geoplot.max_value is None
 ```
 """
 
@@ -98,8 +171,8 @@ geoplot_template = """
 
 			function processTimeSeriesData(geoJsonData) {
 				const timeSeriesMap = new Map()
-				let minValue = Infinity
-				let maxValue = -Infinity
+				let minValue = $minValue
+				let maxValue = $maxValue
 
 				geoJsonData.features.forEach((feature) => {
 					const id = feature.properties.id
@@ -113,9 +186,6 @@ geoplot_template = """
 						timeSeriesMap.set(id, [])
 					}
 					timeSeriesMap.get(id).push({ time, value, coordinates })
-
-					minValue = Math.min(minValue, value)
-					maxValue = Math.max(maxValue, value)
 				})
 
 				return { timeSeriesMap, minValue, maxValue }
@@ -226,18 +296,35 @@ class GeoPlot:
             self.entity_position,
             self.entity_property,
             self.visualization_type,
+            self.auto_color_scale,
+            self.min_value,
+            self.max_value,
         ) = (
             options["cesium_token"],
             options["step_time"],
             options["coordinates"],
             options["feature"],
-            options["visualization_type"],
+            options.get("visualization_type", "color"),
+            options.get("auto_color_scale", True),
+            options.get("min_value"),
+            options.get("max_value"),
         )
 
-    def render(self, state_trajectory):
+    def visualize(self, state_trajectory):
         coords, values = [], []
         name = self.config["simulation_metadata"]["name"]
         geodata_path, geoplot_path = f"{name}.geojson", f"{name}.html"
+
+        # Calculate min and max values if auto_color_scale is enabled
+        if self.auto_color_scale:
+            all_values = []
+            for i in range(0, len(state_trajectory) - 1):
+                final_state = state_trajectory[i][-1]
+                values_list = np.array(read_var(final_state, self.entity_property)).flatten().tolist()
+                all_values.extend(values_list)
+            
+            self.min_value = min(all_values) if self.min_value is None else self.min_value
+            self.max_value = max(all_values) if self.max_value is None else self.max_value
 
         for i in range(0, len(state_trajectory) - 1):
             final_state = state_trajectory[i][-1]
@@ -288,6 +375,8 @@ class GeoPlot:
                         "stopTime": timestamps[-1].isoformat(),
                         "data": json.dumps(geojsons),
                         "visualType": self.visualization_type,
+                        "minValue": self.min_value,
+                        "maxValue": self.max_value,
                     }
                 )
             )
